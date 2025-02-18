@@ -1,0 +1,145 @@
+clear; close all; clc;
+
+% ============================== Data Load ==============================
+FileLength = 9;
+Degs = 15;
+DegStart = -60;
+DATA = cell(FileLength, 1);
+
+addpath("C:\Users\wnd02\source\repos\DCSP\DCSP_Motor\DCSP_Motor_DegControl\Degree_Control_Final\");
+addpath("C:\Users\wnd02\OneDrive\바탕 화면\한동 6\디제\MATLAB\simulink\");
+
+for k = 1:FileLength
+    FileName = sprintf("DegControl_%.2f_data.out", Degs*(k-1)+DegStart);
+    DATA{k} = load(FileName);
+end
+DATAN = length(DATA{1});
+
+a = 13.12;
+K = 7656/a;
+
+% ========================= Simulation Parameter (default) =========================
+% tf Function
+zeta = 0.85      % Wn = 7.4; Zeta = 1.35일때, Pm 90
+Wn = 13         % Zeta = 0.6; Wn = 12.6일때, Gm = 10.63   
+format long
+Kp = Wn^2/a/K  %*DIV
+Kd = 1/K*(2*zeta*Wn/a - 1)     %*DIV
+NUM_Design = K*a;
+DEN_Design = [1 a];
+NUM_true = [1.137e4, 5.346e4];
+DEN_true = [1, 27.32, 84.84];
+
+% time
+Tstart = 0.0;
+Tend = 2.0;
+Ts = 1/200;
+Tsim = Ts;
+time = (Tstart:Tsim:Tend)';
+PM = 81.3*pi/180;
+Wpc = 11.37;
+% Tdelay = PM/Wpc
+Tdelay = Tsim;
+
+% 이론 값 전달함수 
+Gp = tf(NUM_Design, DEN_Design)
+Gc = tf([Kd Kp], 1)
+inte = tf(1, [1 0])
+Go = Gp * Gc * inte
+Gcl = minreal(Go / (1 + Go))
+out_Gcl = cell(FileLength, 1);
+out = cell(FileLength, 1);
+cmdout = cell(FileLength, 1);
+
+for k = 1:FileLength
+    Vref = ones(length(time), 1) *DATA{k}(1, 2);
+    DATA_in = [time, Vref];
+    
+    out_Gcl{k} = lsim(Gcl, DATA_in(:,2), DATA_in(:, 1));
+    out{k} = sim("Design_Controller.slx");
+    cmdout{k} = out{k}.Cmd;
+
+    figure; hold on; plot( DATA{k}(:,1), DATA{k}(1,2)*ones(DATAN,1), DATA_in(:,1), out_Gcl{k}, DATA{k}(:,1), DATA{k}(:,3), out{k}.tout, out{k}.Deg_out);
+    xlabel("time [sec]");
+    ylabel("\psi_g [deg]");
+    figureName = sprintf("Reference Degree : %.2f[Deg]", DATA{k}(1,2))
+    legend("Input", "Theory", "Experiment", "Simulation", Location = 'best');
+    hold off;
+
+    figure; plot(time, cmdout{k});
+    xlabel("time [sec]");
+    ylabel("V_c [V]");
+%     xlim([0.1 0.9])
+end
+
+
+Time_rise = zeros(FileLength, 3);
+mean_t = zeros(FileLength, 1);
+mean_s1 = zeros(FileLength, 1);
+mean_theo = zeros(FileLength, 1);
+% 1:true 2:1pole 3:2poles 4:true/s1 5:true/s2
+Err = zeros(FileLength, 5);
+
+% Capture the 90% rise time
+for k = 1:FileLength
+    count = 0;
+    for i = round(DATAN/2):DATAN
+        count = count + 1;
+        mean_t(k) = mean_t(k) + DATA{k}(i,3);
+        mean_s1(k) = mean_s1(k) + out{k}.Deg_out(i);
+        mean_theo(k) = mean_theo(k) + out_Gcl{k}(i);
+    end
+
+    Deg90 = abs(DATA{k}(1, 2)) * 0.9;
+    for i = 1:DATAN
+        if (abs(out{k}.Deg_out(i)) > Deg90)
+            Time_rise(k,1) = out{k}.tout(i);
+            break;
+        end
+    end
+
+    for i = 1:DATAN
+        if (abs(DATA{k}(i,3)) > Deg90)
+            Time_rise(k,2) = DATA{k}(i,1);
+            break;
+        end
+    end
+    for i = 1:DATAN
+        if (abs(out_Gcl{k}(i)) > Deg90)
+            Time_rise(k,3) = time(i);
+            break;
+        end
+    end
+end
+Vref_t = abs(DegStart:Degs:60)';
+
+mean_t = abs(mean_t)/count;
+mean_s1 = abs(mean_s1)/count;
+mean_theo = abs(mean_theo)/count;
+
+Err(:,2) = abs((mean_t - Vref_t) );
+Err(:,3) = abs((mean_s1 - Vref_t)) ;
+Err(:,1) = abs((mean_theo - Vref_t)) ;
+% Err(:,4) = abs((mean_t - mean_s1);
+% Err(:,5) = abs((mean_t - mean_theo) ./ mean_theo) * 100;
+
+% find the overshoot%
+oves = zeros(FileLength, 3);
+
+for k = 1:FileLength
+    oves(k, 1) = max(abs(out_Gcl{k})) / abs(Vref_t(k));
+    oves(k, 2) = max(abs(DATA{k}(:,3))) / abs(Vref_t(k));
+    oves(k, 3) = max(abs(out{k}.Deg_out)) / abs(Vref_t(k));
+end
+
+Err(isnan(Err) | isinf(Err)) = 0;
+SUM = sum(Err);
+SUM = SUM/8
+
+(SUM(2)-SUM(3)) / SUM(3)*100
+
+Kp = 1, Ki = 0.5
+freq = 1;
+W = 2*pi*freq;
+K1 = K*a
+-(W+a)/(K1*(Kp*W + Ki) + W*(W+a))
